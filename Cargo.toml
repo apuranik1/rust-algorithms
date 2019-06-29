@@ -1,0 +1,7 @@
+[package]
+name = "rust-algorithms"
+version = "0.1.0"
+authors = ["Alok Puranik <alokpuranik1@gmail.com>"]
+edition = "2018"
+
+[dependencies]
