@@ -50,7 +50,6 @@ fn eval_polynomial(
     offset: usize,
     stride: usize,
 ) -> Vec<Complex64> {
-    assert!(offset < stride);
     if order == 0 {
         panic!("Illegal state: coefs.len() < stride")
     } else if order == 1 {
@@ -70,19 +69,17 @@ fn eval_polynomial(
         );
         let angle =
             (if negative_angle { -1.0 } else { 1.0 }) * 2.0 * std::f64::consts::PI / (order as f64);
-        let mut first_half = Vec::new();
-        let mut second_half = Vec::new();
+        let half_order = order / 2;
+        let mut computed = vec![Complex64::new(0.0, 0.0); order];
         for (k, (even_part, odd_part)) in
             Iterator::zip(even_result.iter(), odd_result.iter()).enumerate()
         {
-            let positive_root = Complex64::from_polar(&(1.0), &(angle * k as f64));
-            // at postive_root, P = even_part + positive_root * odd_part
-            first_half.push(even_part + positive_root * odd_part);
-            // at -positive_root, do something similar
-            second_half.push(even_part - positive_root * odd_part);
+            let root = Complex64::from_polar(&(1.0), &(angle * k as f64));
+            let twiddled = root * odd_part;
+            computed[k] = even_part + twiddled;
+            computed[k + half_order] = even_part - twiddled;
         }
-        first_half.extend(second_half);
-        first_half
+        computed
     }
 }
 
