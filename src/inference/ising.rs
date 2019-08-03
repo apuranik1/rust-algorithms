@@ -1,6 +1,6 @@
 use crate::inference::discrete::{EdgePotential, NodePotential};
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct IsingNode {
     bias: f64,
 }
@@ -12,7 +12,7 @@ impl IsingNode {
 }
 
 impl NodePotential for IsingNode {
-    fn max_value(&self) -> usize {
+    fn n_values(&self) -> usize {
         2
     }
 
@@ -23,9 +23,15 @@ impl NodePotential for IsingNode {
             _ => panic!("Invalid value: {}", value),
         }
     }
+
+    fn update_potentials(&self, updates: &[f64]) -> Self {
+        assert!(updates.len() == 2);
+        let difference = updates[1] - updates[0];
+        IsingNode::new(self.bias + difference / 2.0)
+    }
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct IsingEdge {
     interaction: f64,
 }
@@ -37,11 +43,11 @@ impl IsingEdge {
 }
 
 impl EdgePotential for IsingEdge {
-    fn max_value_1(&self) -> usize {
+    fn n_values_1(&self) -> usize {
         2
     }
 
-    fn max_value_2(&self) -> usize {
+    fn n_values_2(&self) -> usize {
         2
     }
 
@@ -55,12 +61,15 @@ impl EdgePotential for IsingEdge {
             -self.interaction
         }
     }
+
+    fn transpose(&self) -> Self {
+        self.clone() // Ising potential is symmetrical
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::inference::discrete::DiscreteUndirectedGraph;
 
     #[test]
     fn test_node_potential_bias() {
@@ -76,5 +85,12 @@ mod tests {
         assert_eq!(ep.potential(0, 1), -2.0);
         assert_eq!(ep.potential(1, 0), -2.0);
         assert_eq!(ep.potential(1, 1), 2.0);
+    }
+
+    #[test]
+    fn test_potential_update() {
+        let np = IsingNode::new(1.0);
+        let update = vec![1.0, -1.0];
+        assert_eq!(np.update_potentials(&update).bias, 0.0)
     }
 }
