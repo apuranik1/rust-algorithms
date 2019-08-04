@@ -1,4 +1,6 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
+
+// All values are in ln-space unless otherwise specified
 
 pub trait NodePotential {
     fn n_values(&self) -> usize;
@@ -22,6 +24,8 @@ pub struct DiscreteUndirectedGraph<NP: NodePotential + Clone, EP: EdgePotential 
     /// psi_ij(v_1, v_2) = edge_potentials[i][j][v_1][v_2]
     edge_potentials: BTreeMap<(usize, usize), EP>,
 }
+
+type Message = (usize, Vec<f64>);
 
 impl<NP: NodePotential + Clone, EP: EdgePotential + Clone> DiscreteUndirectedGraph<NP, EP> {
     pub fn new(
@@ -76,22 +80,20 @@ impl<NP: NodePotential + Clone, EP: EdgePotential + Clone> DiscreteUndirectedGra
     /// If the graph is not connected, only sort the component with the root
     pub fn tree_topo_sort(&self, tree_root: usize) -> Option<Vec<usize>> {
         let mut topo_order = Vec::new();
-        let mut visited = Vec::with_capacity(self.n_nodes());
-        for _ in 0..self.node_potentials.len() {
-            visited.push(false);
-        }
         let mut to_visit = vec![tree_root];
+        // a node is marked as visited when it is first added to to_visit
+        let mut visited = BTreeSet::new();
+        visited.insert(tree_root);
 
-        while !to_visit.is_empty() {
-            let next = to_visit.pop().unwrap();
+        while let Some(next) = to_visit.pop() {
             topo_order.push(next);
-            visited[next] = true;
             let mut n_visited_neighbors = 0;
             for neighbor in self.neighbors(next) {
-                if visited[*neighbor] {
-                    n_visited_neighbors += 1
+                if visited.contains(neighbor) {
+                    n_visited_neighbors += 1;
                 } else {
-                    to_visit.push(*neighbor)
+                    to_visit.push(*neighbor);
+                    visited.insert(next);
                 }
             }
             if n_visited_neighbors > 1 {
@@ -99,6 +101,34 @@ impl<NP: NodePotential + Clone, EP: EdgePotential + Clone> DiscreteUndirectedGra
             }
         }
         Some(topo_order)
+    }
+
+    /// Topologically sort the full graph, assuming it is a forest
+    /// roots are always the nodes with lowest index in a tree
+    /// If the graph is not a forest, returns None
+    pub fn forest_topo_sort(&self) -> Option<Vec<usize>> {
+        let mut topo_sort = Vec::with_capacity(self.n_nodes());
+        let mut visited = Vec::with_capacity(self.n_nodes());
+        for _ in 0..self.node_potentials.len() {
+            visited.push(false);
+        }
+        for candidate_root in 0..self.n_nodes() {
+            if !visited[candidate_root] {
+                // add a new tree, rooted here
+                match self.tree_topo_sort(candidate_root) {
+                    Some(mut sort_order) => {
+                        for &node in sort_order.iter() {
+                            visited[node] = true;
+                        }
+                        topo_sort.append(&mut sort_order);
+                    }
+                    None => {
+                        return None;
+                    }
+                }
+            }
+        }
+        Some(topo_sort)
     }
 
     /// condition the graph on the given values, producing a new graph
@@ -144,6 +174,98 @@ impl<NP: NodePotential + Clone, EP: EdgePotential + Clone> DiscreteUndirectedGra
             new_to_old,
         )
     }
+
+    /// Compute the marginal distribution at each node of the graph
+    /// Each marginal is expressed as a node potential
+    pub fn compute_marginals(&self) -> Option<Vec<NP>> {
+        self.forest_topo_sort().map(|node_order| {
+            let mut visited: Vec<bool> = Vec::with_capacity(self.n_nodes());
+            let mut inboxes = self.make_inboxes();
+            for _ in 0..self.n_nodes() {
+                visited.push(false);
+            }
+            // belief propagation up from leaves
+            for &node in node_order.iter().rev() {
+                // mark it as visited
+                visited[node] = true;
+                // for each unvisited neighbor: send a message
+                for &neighbor in self.neighbors(node).iter() {
+                    if !visited[neighbor] {
+                        let new_message = self.message(node, neighbor, &inboxes);
+                        inboxes[neighbor].push(new_message);
+                    }
+                }
+            }
+            // reset visited array
+            for entry in visited.iter_mut() {
+                *entry = false;
+            }
+            // belief propagation down from root(s), still accumulating to inbox
+            for &node in node_order.iter() {
+                visited[node] = true;
+                for &neighbor in self.neighbors(node).iter() {
+                    if !visited[neighbor] {
+                        let new_message = self.message(node, neighbor, &inboxes);
+                        inboxes[neighbor].push(new_message);
+                    }
+                }
+            }
+            Iterator::zip(self.node_potentials.iter(), inboxes.iter())
+                .map(|(np, inbox)| {
+                    inbox
+                        .iter()
+                        .fold(np.clone(), |p, msg| p.update_potentials(&msg.1))
+                })
+                .collect()
+        })
+    }
+
+    fn make_inboxes(&self) -> Vec<Vec<Message>> {
+        let mut inboxes: Vec<Vec<Message>> = Vec::with_capacity(self.n_nodes());
+        for _ in 0..self.n_nodes() {
+            inboxes.push(Vec::new());
+        }
+        inboxes
+    }
+
+    fn message(&self, node: usize, neighbor: usize, inboxes: &[Vec<Message>]) -> Message {
+        // message_i->j(x_j) = sum_{x_i}phi_i(x_i)psi_ij(x_j, x_i) prod_{k not j} m_k->i(x_i)
+        let inbound = &inboxes[node];
+        let phi_i = self.node_potential(node);
+        let phi_j = self.node_potential(neighbor);
+        let psi_ij = self.edge_potential(node, neighbor).unwrap();
+        let mut outbound = Vec::new();
+        for x_j in 0..phi_j.n_values() {
+            // compute m_node->neighbor (x_j)
+            let mut to_sum = Vec::new();
+            for x_i in 0..phi_i.n_values() {
+                let base_potential = phi_i.potential(x_i) + psi_ij.potential(x_i, x_j);
+                // aggregate messages not from neighbor
+                let message_agg: f64 = inbound
+                    .iter()
+                    .filter_map(|message| {
+                        if message.0 == neighbor {
+                            None
+                        } else {
+                            Some(message.1[x_i])
+                        }
+                    })
+                    .sum();
+                to_sum.push(base_potential + message_agg);
+            }
+            outbound.push(log_sum_exp(&to_sum));
+        }
+        (node, outbound)
+    }
+}
+
+/// Compute the logsumexp of the values
+/// If values is empty, returns NaN
+fn log_sum_exp(values: &[f64]) -> f64 {
+    use std::f64;
+    let max_val = values.iter().fold(f64::NEG_INFINITY, |a, &b| a.max(b));
+    let sum_exp = values.iter().fold(0.0, |a, &b| a + (b - max_val).exp());
+    sum_exp.ln() + max_val
 }
 
 #[cfg(test)]
@@ -180,6 +302,12 @@ mod tests {
     }
 
     #[test]
+    fn test_logsumexp() {
+        assert_eq!(log_sum_exp(&vec![0.0, 0.0]), (2.0_f64).ln());
+        assert!((log_sum_exp(&vec![1000.0, 0.0]) - 1000.0).abs() < 1e-6);
+    }
+
+    #[test]
     fn test_correct_edges() {
         let wedge = wedge_graph();
         assert_eq!(*wedge.neighbors(0), vec![1usize]);
@@ -200,7 +328,9 @@ mod tests {
     fn test_edge_potentials() {
         let wedge = wedge_graph();
         assert_eq!(wedge.edge_potential(0, 1).unwrap().potential(0, 0), 0.5);
+        assert_eq!(wedge.edge_potential(1, 0).unwrap().potential(0, 0), 0.5);
         assert!(wedge.edge_potential(0, 2).is_none());
+        assert!(wedge.edge_potential(2, 0).is_none());
     }
 
     #[test]
@@ -237,5 +367,32 @@ mod tests {
             -0.5
         );
         assert_eq!(conditioned.node_potential(1).potential(1), 2.0);
+    }
+
+    #[test]
+    fn test_marginalize_ising_1_edge() {
+        use std::f64::consts::E;
+
+        let node1 = IsingNode::new(1.0);
+        let edge = IsingEdge::new(1.0);
+        let node2 = IsingNode::new(1.0);
+        let mut edge_set = BTreeMap::new();
+        edge_set.insert((0, 1), edge);
+        let graph = DiscreteUndirectedGraph::new(vec![node1, node2], edge_set);
+        let marginals = graph.compute_marginals().unwrap();
+        let expected_prob_ratio = (E.powi(4) + 1.0) / 2.0;
+        let prob_ratio_0 = (marginals[0].potential(1) - marginals[0].potential(0)).exp();
+        assert!((expected_prob_ratio - prob_ratio_0).abs() < 1e-7);
+        let prob_ratio_1 = (marginals[1].potential(1) - marginals[1].potential(0)).exp();
+        assert!((expected_prob_ratio - prob_ratio_1).abs() < 1e-7);
+    }
+
+    #[test]
+    fn test_marginalize_ising_isolated() {
+        let nodes = vec![IsingNode::new(-1.0), IsingNode::new(1.0)];
+        let graph = DiscreteUndirectedGraph::<IsingNode, IsingEdge>::new(nodes, BTreeMap::new());
+        let marginals = graph.compute_marginals().unwrap();
+        assert_eq!(marginals[0].potential(1), -1.0);
+        assert_eq!(marginals[1].potential(1), 1.0);
     }
 }
