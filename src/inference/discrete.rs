@@ -268,6 +268,101 @@ fn log_sum_exp(values: &[f64]) -> f64 {
     sum_exp.ln() + max_val
 }
 
+pub struct CategoricalNode {
+    potentials: Vec<f64>,
+}
+
+impl CategoricalNode {
+    pub fn new(potentials: Vec<f64>) -> Self {
+        CategoricalNode { potentials }
+    }
+}
+
+impl NodePotential for CategoricalNode {
+    fn n_values(&self) -> usize {
+        self.potentials.len()
+    }
+
+    fn potential(&self, value: usize) -> f64 {
+        self.potentials[value]
+    }
+
+    fn update_potentials(&self, updates: &[f64]) -> Self {
+        let mut new_potentials = Iterator::zip(self.potentials.iter(), updates.iter())
+            .map(|(pot, up)| pot + up)
+            .collect::<Vec<f64>>();
+        // renormalize so that the maximum value is 0, for numerical stability
+        let max = new_potentials
+            .iter()
+            .fold(std::f64::NEG_INFINITY, |a, &b| a.max(b));
+        for entry in new_potentials.iter_mut() {
+            *entry -= max;
+        }
+        CategoricalNode::new(new_potentials)
+    }
+}
+
+pub struct CategoricalEdge {
+    dim_1: usize,
+    dim_2: usize,
+    potentials: Vec<f64>, // potentials in row-major order
+}
+
+impl CategoricalEdge {
+    pub fn from_grid(potentials_grid: &[Vec<f64>]) -> Option<Self> {
+        let dim_1 = potentials_grid.len();
+        if dim_1 == 0 {
+            return None;
+        }
+        let dim_2 = potentials_grid[0].len();
+        if dim_2 == 0 {
+            return None;
+        }
+        let mut potentials = Vec::<f64>::new();
+        for row in potentials_grid {
+            if row.len() != dim_2 {
+                return None;
+            }
+            potentials.extend(row.iter());
+        }
+        Some(CategoricalEdge {
+            dim_1,
+            dim_2,
+            potentials,
+        })
+    }
+}
+
+impl EdgePotential for CategoricalEdge {
+    fn n_values_1(&self) -> usize {
+        self.dim_1
+    }
+
+    fn n_values_2(&self) -> usize {
+        self.dim_2
+    }
+
+    fn potential(&self, v1: usize, v2: usize) -> f64 {
+        assert!(v1 < self.dim_1);
+        assert!(v2 < self.dim_2);
+        self.potentials[v1 * self.dim_2 + v2]
+    }
+
+    fn transpose(&self) -> Self {
+        let mut potentials = Vec::with_capacity(self.potentials.len());
+        for v2 in 0..self.n_values_2() {
+            for v1 in 0..self.n_values_1() {
+                potentials.push(self.potential(v1, v2));
+            }
+        }
+        CategoricalEdge {
+            dim_1: self.dim_2,
+            dim_2: self.dim_1,
+            potentials,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -394,5 +489,31 @@ mod tests {
         let marginals = graph.compute_marginals().unwrap();
         assert_eq!(marginals[0].potential(1), -1.0);
         assert_eq!(marginals[1].potential(1), 1.0);
+    }
+
+    fn categorical_edge_2x3() -> CategoricalEdge {
+        CategoricalEdge::from_grid(&vec![vec![1.0, 2.0, 3.0], vec![4.0, 5.0, 6.0]]).unwrap()
+    }
+
+    #[test]
+    fn test_categorical_edge_potentials() {
+        let edge = categorical_edge_2x3();
+        assert_eq!(edge.n_values_1(), 2);
+        assert_eq!(edge.n_values_2(), 3);
+        assert_eq!(edge.potential(0, 0), 1.0);
+        assert_eq!(edge.potential(0, 2), 3.0);
+        assert_eq!(edge.potential(1, 0), 4.0);
+        assert_eq!(edge.potential(1, 2), 6.0);
+    }
+
+    #[test]
+    fn test_categorical_edge_transpose() {
+        let edge = categorical_edge_2x3().transpose();
+        assert_eq!(edge.n_values_1(), 3);
+        assert_eq!(edge.n_values_2(), 2);
+        assert_eq!(edge.potential(0, 0), 1.0);
+        assert_eq!(edge.potential(2, 0), 3.0);
+        assert_eq!(edge.potential(0, 1), 4.0);
+        assert_eq!(edge.potential(2, 1), 6.0);
     }
 }

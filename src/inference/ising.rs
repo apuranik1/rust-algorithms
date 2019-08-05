@@ -9,6 +9,14 @@ impl IsingNode {
     pub fn new(bias: f64) -> Self {
         IsingNode { bias }
     }
+
+    pub fn with_positive_prob(p_positive: f64) -> Option<Self> {
+        if p_positive <= 0.0 || p_positive >= 1.0 {
+            None
+        } else {
+            Some(IsingNode::new((p_positive / (1.0 - p_positive)).ln() / 2.0))
+        }
+    }
 }
 
 impl NodePotential for IsingNode {
@@ -39,6 +47,14 @@ pub struct IsingEdge {
 impl IsingEdge {
     pub fn new(interaction: f64) -> Self {
         IsingEdge { interaction }
+    }
+
+    pub fn with_aligned_prob(p_aligned: f64) -> Option<Self> {
+        if p_aligned <= 0.0 || p_aligned >= 1.0 {
+            None
+        } else {
+            Some(IsingEdge::new((p_aligned / (1.0 - p_aligned)).ln() / 2.0))
+        }
     }
 }
 
@@ -79,6 +95,15 @@ mod tests {
     }
 
     #[test]
+    fn test_with_positive_prob() {
+        let positive_prob = 0.9;
+        let node = IsingNode::with_positive_prob(positive_prob).unwrap();
+        let prob_ratio: f64 = (node.potential(1) - node.potential(0)).exp();
+        let expected_prob_ratio = 0.9 / 0.1;
+        assert!((prob_ratio - expected_prob_ratio).abs() < 1e-9);
+    }
+
+    #[test]
     fn test_edge_potential_interaction() {
         let ep = IsingEdge::new(2.0);
         assert_eq!(ep.potential(0, 0), 2.0);
@@ -92,5 +117,14 @@ mod tests {
         let np = IsingNode::new(1.0);
         let update = vec![1.0, -1.0];
         assert_eq!(np.update_potentials(&update).bias, 0.0)
+    }
+
+    #[test]
+    fn test_with_aligned_prob() {
+        let aligned_prob = 0.9;
+        let edge = IsingEdge::with_aligned_prob(aligned_prob).unwrap();
+        let prob_ratio: f64 = (edge.potential(0, 0) - edge.potential(1, 0)).exp();
+        let expected_prob_ratio = 0.9 / 0.1;
+        assert!((prob_ratio - expected_prob_ratio).abs() < 1e-9);
     }
 }
