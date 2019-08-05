@@ -6,6 +6,14 @@ pub trait NodePotential {
     fn n_values(&self) -> usize;
     fn potential(&self, value: usize) -> f64;
     fn update_potentials(&self, updates: &[f64]) -> Self;
+
+    fn to_distribution(&self) -> Vec<f64> {
+        let unnorm_values: Vec<f64> = (0..self.n_values())
+            .map(|x| self.potential(x).exp())
+            .collect();
+        let norm_const: f64 = unnorm_values.iter().sum();
+        unnorm_values.iter().map(|x| x / norm_const).collect()
+    }
 }
 
 pub trait EdgePotential {
@@ -65,6 +73,10 @@ impl<NP: NodePotential + Clone, EP: EdgePotential + Clone> DiscreteUndirectedGra
 
     pub fn node_potential(&self, v: usize) -> &NP {
         &self.node_potentials[v]
+    }
+
+    pub fn set_node_potential(&mut self, v: usize, potential: NP) {
+        self.node_potentials[v] = potential;
     }
 
     pub fn neighbors(&self, v: usize) -> &Vec<usize> {
@@ -210,7 +222,9 @@ impl<NP: NodePotential + Clone, EP: EdgePotential + Clone> DiscreteUndirectedGra
                     }
                 }
             }
-            Iterator::zip(self.node_potentials.iter(), inboxes.iter())
+            self.node_potentials
+                .iter()
+                .zip(inboxes.iter())
                 .map(|(np, inbox)| {
                     inbox
                         .iter()
@@ -288,7 +302,10 @@ impl NodePotential for CategoricalNode {
     }
 
     fn update_potentials(&self, updates: &[f64]) -> Self {
-        let mut new_potentials = Iterator::zip(self.potentials.iter(), updates.iter())
+        let mut new_potentials = self
+            .potentials
+            .iter()
+            .zip(updates.iter())
             .map(|(pot, up)| pot + up)
             .collect::<Vec<f64>>();
         // renormalize so that the maximum value is 0, for numerical stability
