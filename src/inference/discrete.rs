@@ -2,6 +2,18 @@ use std::collections::{BTreeMap, BTreeSet};
 
 // All values are in ln-space unless otherwise specified
 
+pub fn sample(dist: &[f64]) -> usize {
+    let selector = rand::random::<f64>();
+    let mut cdf = 0.0;
+    for (value, &prob) in dist.iter().enumerate() {
+        cdf += prob;
+        if selector < cdf {
+            return value;
+        }
+    }
+    dist.len()
+}
+
 pub trait NodePotential {
     fn n_values(&self) -> usize;
     fn potential(&self, value: usize) -> f64;
@@ -21,10 +33,22 @@ pub trait EdgePotential {
     fn n_values_2(&self) -> usize;
     fn potential(&self, v1: usize, v2: usize) -> f64;
     fn transpose(&self) -> Self;
+
+    fn fixed_v1(&self, v1: usize) -> Vec<f64> {
+        (0..self.n_values_2())
+            .map(|v2| self.potential(v1, v2))
+            .collect()
+    }
+
+    fn fixed_v2(&self, v2: usize) -> Vec<f64> {
+        (0..self.n_values_1())
+            .map(|v1| self.potential(v1, v2))
+            .collect()
+    }
 }
 
 #[derive(Debug)]
-pub struct DiscreteUndirectedGraph<NP: NodePotential + Clone, EP: EdgePotential + Clone> {
+pub struct DiscreteUndirectedGraph<NP: NodePotential, EP: EdgePotential> {
     /// node i takes values between 1 and n_i. phi_i(v) = node_potentials[i][k]
     node_potentials: Vec<NP>,
     /// edges are stored as adjacency matrix, duplicated for undirected edges
@@ -35,7 +59,7 @@ pub struct DiscreteUndirectedGraph<NP: NodePotential + Clone, EP: EdgePotential 
 
 type Message = (usize, Vec<f64>);
 
-impl<NP: NodePotential + Clone, EP: EdgePotential + Clone> DiscreteUndirectedGraph<NP, EP> {
+impl<NP: NodePotential, EP: EdgePotential> DiscreteUndirectedGraph<NP, EP> {
     pub fn new(
         node_potentials: Vec<NP>,
         mut edge_potentials: BTreeMap<(usize, usize), EP>,
@@ -143,97 +167,6 @@ impl<NP: NodePotential + Clone, EP: EdgePotential + Clone> DiscreteUndirectedGra
         Some(topo_sort)
     }
 
-    /// condition the graph on the given values, producing a new graph
-    /// returns the new graph and the old labels of the nodes in the new graph
-    #[allow(clippy::map_entry)] // false positive with two different maps
-    pub fn condition(&self, values: BTreeMap<usize, usize>) -> (Self, Vec<usize>) {
-        let new_n_nodes = self.n_nodes() - values.len();
-        let mut new_to_old = Vec::with_capacity(new_n_nodes);
-        let mut old_to_new = BTreeMap::new();
-        // make translations from new to old nodes and vice versa
-        for i in 0..self.n_nodes() {
-            if !values.contains_key(&i) {
-                old_to_new.insert(i, new_to_old.len());
-                new_to_old.push(i);
-            }
-        }
-        let mut new_node_potentials = Vec::with_capacity(new_n_nodes);
-        let mut new_edge_potentials = BTreeMap::new();
-        for (new_index, old_index) in new_to_old.iter().enumerate() {
-            let mut new_potential = self.node_potentials[*old_index].clone();
-            let n_values = new_potential.n_values();
-            // check each old neighbor
-            for neighbor in self.neighbors(*old_index) {
-                let ep = self.edge_potential(*old_index, *neighbor).unwrap();
-                match values.get(neighbor) {
-                    Some(&neighbor_val) => {
-                        // condition it out
-                        let update: Vec<f64> = (0..n_values)
-                            .map(|v| ep.potential(v, neighbor_val))
-                            .collect();
-                        new_potential = new_potential.update_potentials(&update);
-                    }
-                    None => {
-                        // translate to new indices
-                        new_edge_potentials.insert((new_index, old_to_new[neighbor]), ep.clone());
-                    }
-                }
-            }
-            new_node_potentials.push(new_potential)
-        }
-        (
-            DiscreteUndirectedGraph::new(new_node_potentials, new_edge_potentials),
-            new_to_old,
-        )
-    }
-
-    /// Compute the marginal distribution at each node of the graph
-    /// Each marginal is expressed as a node potential
-    pub fn compute_marginals(&self) -> Option<Vec<NP>> {
-        self.forest_topo_sort().map(|node_order| {
-            let mut visited: Vec<bool> = Vec::with_capacity(self.n_nodes());
-            let mut inboxes = self.make_inboxes();
-            for _ in 0..self.n_nodes() {
-                visited.push(false);
-            }
-            // belief propagation up from leaves
-            for &node in node_order.iter().rev() {
-                // mark it as visited
-                visited[node] = true;
-                // for each unvisited neighbor: send a message
-                for &neighbor in self.neighbors(node).iter() {
-                    if !visited[neighbor] {
-                        let new_message = self.message(node, neighbor, &inboxes);
-                        inboxes[neighbor].push(new_message);
-                    }
-                }
-            }
-            // reset visited array
-            for entry in visited.iter_mut() {
-                *entry = false;
-            }
-            // belief propagation down from root(s), still accumulating to inbox
-            for &node in node_order.iter() {
-                visited[node] = true;
-                for &neighbor in self.neighbors(node).iter() {
-                    if !visited[neighbor] {
-                        let new_message = self.message(node, neighbor, &inboxes);
-                        inboxes[neighbor].push(new_message);
-                    }
-                }
-            }
-            self.node_potentials
-                .iter()
-                .zip(inboxes.iter())
-                .map(|(np, inbox)| {
-                    inbox
-                        .iter()
-                        .fold(np.clone(), |p, msg| p.update_potentials(&msg.1))
-                })
-                .collect()
-        })
-    }
-
     fn make_inboxes(&self) -> Vec<Vec<Message>> {
         let mut inboxes: Vec<Vec<Message>> = Vec::with_capacity(self.n_nodes());
         for _ in 0..self.n_nodes() {
@@ -270,6 +203,131 @@ impl<NP: NodePotential + Clone, EP: EdgePotential + Clone> DiscreteUndirectedGra
             outbound.push(log_sum_exp(&to_sum));
         }
         (node, outbound)
+    }
+}
+
+impl<NP: NodePotential + Clone, EP: EdgePotential + Clone> DiscreteUndirectedGraph<NP, EP> {
+    /// condition the graph on the given values, producing a new graph
+    /// returns the new graph and the old labels of the nodes in the new graph
+    #[allow(clippy::map_entry)] // false positive with two different maps
+    pub fn condition(&self, values: BTreeMap<usize, usize>) -> (Self, Vec<usize>) {
+        let new_n_nodes = self.n_nodes() - values.len();
+        let mut new_to_old = Vec::with_capacity(new_n_nodes);
+        let mut old_to_new = BTreeMap::new();
+        // make translations from new to old nodes and vice versa
+        for i in 0..self.n_nodes() {
+            if !values.contains_key(&i) {
+                old_to_new.insert(i, new_to_old.len());
+                new_to_old.push(i);
+            }
+        }
+        let mut new_node_potentials = Vec::with_capacity(new_n_nodes);
+        let mut new_edge_potentials = BTreeMap::new();
+        for (new_index, old_index) in new_to_old.iter().enumerate() {
+            let mut new_potential = self.node_potentials[*old_index].clone();
+            // check each old neighbor
+            for neighbor in self.neighbors(*old_index) {
+                let ep = self.edge_potential(*old_index, *neighbor).unwrap();
+                match values.get(neighbor) {
+                    Some(&neighbor_val) => {
+                        // condition it out
+                        new_potential = new_potential.update_potentials(&ep.fixed_v2(neighbor_val));
+                    }
+                    None => {
+                        // translate to new indices
+                        new_edge_potentials.insert((new_index, old_to_new[neighbor]), ep.clone());
+                    }
+                }
+            }
+            new_node_potentials.push(new_potential)
+        }
+        (
+            DiscreteUndirectedGraph::new(new_node_potentials, new_edge_potentials),
+            new_to_old,
+        )
+    }
+
+    /// Compute the marginal distribution at each node of the graph
+    /// Each marginal is expressed as a node potential
+    pub fn compute_marginals(&self) -> Option<Vec<NP>> {
+        self.forest_topo_sort().map(|node_order| {
+            let mut inboxes = self.make_inboxes();
+            // belief propagation up from leaves to root
+            self.propagate_messages(node_order.iter().rev(), &mut inboxes);
+            // belief propagation down from root(s), still accumulating to inbox
+            self.propagate_messages(node_order.iter(), &mut inboxes);
+            self.node_potentials
+                .iter()
+                .zip(inboxes.iter())
+                .map(|(np, inbox)| {
+                    inbox
+                        .iter()
+                        .fold(np.clone(), |p, msg| p.update_potentials(&msg.1))
+                })
+                .collect()
+        })
+    }
+
+    fn propagate_messages<'a, I>(&self, node_order: I, inboxes: &mut Vec<Vec<Message>>)
+    where
+        I: IntoIterator<Item = &'a usize>,
+    {
+        let mut visited: Vec<bool> = Vec::with_capacity(self.n_nodes());
+        for _ in 0..self.n_nodes() {
+            visited.push(false);
+        }
+        for &node in node_order {
+            // mark it as visited
+            visited[node] = true;
+            // for each unvisited neighbor: send a message
+            for &neighbor in self.neighbors(node).iter() {
+                if !visited[neighbor] {
+                    let new_message = self.message(node, neighbor, &inboxes);
+                    inboxes[neighbor].push(new_message);
+                }
+            }
+        }
+    }
+
+    /// Sample from the joint distribution of all nodes in the graph
+    /// Requires the graph to be a forest
+    pub fn sample_joint(&self) -> Option<Vec<usize>> {
+        self.forest_topo_sort().map(|node_order| {
+            let mut inboxes = self.make_inboxes();
+            self.propagate_messages(node_order.iter().rev(), &mut inboxes);
+            // now sample in topological order
+            // the "messages" in this phase are conditioned potentials
+            let mut assignments = Vec::with_capacity(self.n_nodes());
+            let mut visited = Vec::with_capacity(self.n_nodes());
+            for _ in 0..self.n_nodes() {
+                assignments.push(0usize);
+                visited.push(false);
+            }
+            for &node in node_order.iter() {
+                visited[node] = true;
+                // sample node
+                // get potentials
+                // compute a message as `fixed_v1` for each unvisited edge
+                let conditional = inboxes[node]
+                    .iter()
+                    .fold(self.node_potential(node).clone(), |p, msg| {
+                        p.update_potentials(&msg.1)
+                    });
+                let sample_val = sample(&conditional.to_distribution());
+                assignments[node] = sample_val;
+                for &neighbor in self.neighbors(node).iter() {
+                    if !visited[neighbor] {
+                        inboxes[neighbor].push((
+                            node,
+                            self.edge_potential(node, neighbor)
+                                .unwrap()
+                                .fixed_v1(sample_val),
+                        ));
+                    }
+                }
+            }
+            assignments
+        })
     }
 }
 
@@ -532,5 +590,18 @@ mod tests {
         assert_eq!(edge.potential(2, 0), 3.0);
         assert_eq!(edge.potential(0, 1), 4.0);
         assert_eq!(edge.potential(2, 1), 6.0);
+    }
+
+    #[test]
+    fn test_sample_joint_coupled_nodes() {
+        for _ in 0..100 {
+            let nodes = vec![IsingNode::new(0.0), IsingNode::new(0.0)];
+            let mut edges = BTreeMap::new();
+            edges.insert((0, 1), IsingEdge::new(20.0));
+            let graph = DiscreteUndirectedGraph::new(nodes, edges);
+            let sample = graph.sample_joint().unwrap();
+            assert_eq!(sample.len(), 2);
+            assert_eq!(sample[0], sample[1]);
+        }
     }
 }
