@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::HashMap;
 
 use crate::inference::discrete::DiscreteUndirectedGraph;
 use crate::inference::ising::{IsingEdge, IsingNode};
@@ -8,7 +8,7 @@ pub fn make_family_tree(
 ) -> (
     DiscreteUndirectedGraph<IsingNode, IsingEdge>,
     Vec<String>,
-    BTreeMap<String, usize>,
+    HashMap<String, usize>,
 ) {
     assert!(alpha > 0.0);
     let p_aligned = alpha / (1.0 + alpha);
@@ -19,7 +19,7 @@ pub fn make_family_tree(
     .into_iter()
     .map(String::from)
     .collect();
-    let name_to_idx: BTreeMap<String, usize> = nodes
+    let name_to_idx: HashMap<String, usize> = nodes
         .iter()
         .enumerate()
         .map(|(a, b)| (b.clone(), a))
@@ -41,7 +41,7 @@ pub fn make_family_tree(
     .collect();
     let node_potentials = (0..nodes.len()).map(|_| IsingNode::new(0.0)).collect();
     let family_edge = IsingEdge::with_aligned_prob(p_aligned).unwrap();
-    let edge_potentials: BTreeMap<(usize, usize), IsingEdge> = edges
+    let edge_potentials: HashMap<(usize, usize), IsingEdge> = edges
         .into_iter()
         .map(|edge| (edge, family_edge.clone()))
         .collect();

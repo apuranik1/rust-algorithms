@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeSet, HashMap};
 
 // All values are in ln-space unless otherwise specified
 
@@ -54,16 +54,13 @@ pub struct DiscreteUndirectedGraph<NP: NodePotential, EP: EdgePotential> {
     /// edges are stored as adjacency matrix, duplicated for undirected edges
     edges: Vec<Vec<usize>>,
     /// psi_ij(v_1, v_2) = edge_potentials[i][j][v_1][v_2]
-    edge_potentials: BTreeMap<(usize, usize), EP>,
+    edge_potentials: HashMap<(usize, usize), EP>,
 }
 
 type Message = (usize, Vec<f64>);
 
 impl<NP: NodePotential, EP: EdgePotential> DiscreteUndirectedGraph<NP, EP> {
-    pub fn new(
-        node_potentials: Vec<NP>,
-        mut edge_potentials: BTreeMap<(usize, usize), EP>,
-    ) -> Self {
+    pub fn new(node_potentials: Vec<NP>, mut edge_potentials: HashMap<(usize, usize), EP>) -> Self {
         let n_nodes = node_potentials.len();
         let mut edges: Vec<Vec<usize>> = Vec::new();
         for _ in 0..n_nodes {
@@ -210,10 +207,10 @@ impl<NP: NodePotential + Clone, EP: EdgePotential + Clone> DiscreteUndirectedGra
     /// condition the graph on the given values, producing a new graph
     /// returns the new graph and the old labels of the nodes in the new graph
     #[allow(clippy::map_entry)] // false positive with two different maps
-    pub fn condition(&self, values: BTreeMap<usize, usize>) -> (Self, Vec<usize>) {
+    pub fn condition(&self, values: HashMap<usize, usize>) -> (Self, Vec<usize>) {
         let new_n_nodes = self.n_nodes() - values.len();
         let mut new_to_old = Vec::with_capacity(new_n_nodes);
-        let mut old_to_new = BTreeMap::new();
+        let mut old_to_new = HashMap::new();
         // make translations from new to old nodes and vice versa
         for i in 0..self.n_nodes() {
             if !values.contains_key(&i) {
@@ -222,7 +219,7 @@ impl<NP: NodePotential + Clone, EP: EdgePotential + Clone> DiscreteUndirectedGra
             }
         }
         let mut new_node_potentials = Vec::with_capacity(new_n_nodes);
-        let mut new_edge_potentials = BTreeMap::new();
+        let mut new_edge_potentials = HashMap::new();
         for (new_index, old_index) in new_to_old.iter().enumerate() {
             let mut new_potential = self.node_potentials[*old_index].clone();
             // check each old neighbor
@@ -292,42 +289,41 @@ impl<NP: NodePotential + Clone, EP: EdgePotential + Clone> DiscreteUndirectedGra
     /// Sample from the joint distribution of all nodes in the graph
     /// Requires the graph to be a forest
     pub fn sample_joint(&self) -> Option<Vec<usize>> {
-        self.forest_topo_sort().map(|node_order| {
-            let mut inboxes = self.make_inboxes();
-            self.propagate_messages(node_order.iter().rev(), &mut inboxes);
-            // now sample in topological order
-            // the "messages" in this phase are conditioned potentials
-            let mut assignments = Vec::with_capacity(self.n_nodes());
-            let mut visited = Vec::with_capacity(self.n_nodes());
-            for _ in 0..self.n_nodes() {
-                assignments.push(0usize);
-                visited.push(false);
-            }
-            for &node in node_order.iter() {
-                visited[node] = true;
-                // sample node
-                // get potentials
-                // compute a message as `fixed_v1` for each unvisited edge
-                let conditional = inboxes[node]
-                    .iter()
-                    .fold(self.node_potential(node).clone(), |p, msg| {
-                        p.update_potentials(&msg.1)
-                    });
-                let sample_val = sample(&conditional.to_distribution());
-                assignments[node] = sample_val;
-                for &neighbor in self.neighbors(node).iter() {
-                    if !visited[neighbor] {
-                        inboxes[neighbor].push((
-                            node,
-                            self.edge_potential(node, neighbor)
-                                .unwrap()
-                                .fixed_v1(sample_val),
-                        ));
-                    }
+        let node_order = self.forest_topo_sort()?;
+        let mut inboxes = self.make_inboxes();
+        self.propagate_messages(node_order.iter().rev(), &mut inboxes);
+        // now sample in topological order
+        // the "messages" in this phase are conditioned potentials
+        let mut assignments = Vec::with_capacity(self.n_nodes());
+        let mut visited = Vec::with_capacity(self.n_nodes());
+        for _ in 0..self.n_nodes() {
+            assignments.push(0usize);
+            visited.push(false);
+        }
+        for &node in node_order.iter() {
+            visited[node] = true;
+            // sample node
+            // get potentials
+            // compute a message as `fixed_v1` for each unvisited edge
+            let conditional = inboxes[node]
+                .iter()
+                .fold(self.node_potential(node).clone(), |p, msg| {
+                    p.update_potentials(&msg.1)
+                });
+            let sample_val = sample(&conditional.to_distribution());
+            assignments[node] = sample_val;
+            for &neighbor in self.neighbors(node).iter() {
+                if !visited[neighbor] {
+                    inboxes[neighbor].push((
+                        node,
+                        self.edge_potential(node, neighbor)
+                            .unwrap()
+                            .fixed_v1(sample_val),
+                    ));
                 }
             }
-            assignments
-        })
+        }
+        Some(assignments)
     }
 }
 
@@ -449,7 +445,7 @@ mod tests {
             IsingNode::new(1.0),
             IsingNode::new(2.0),
         ];
-        let mut edge_potentials = BTreeMap::new();
+        let mut edge_potentials = HashMap::new();
         edge_potentials.insert((0, 1), IsingEdge::new(0.5));
         edge_potentials.insert((1, 2), IsingEdge::new(-0.5));
         DiscreteUndirectedGraph::new(node_potentials, edge_potentials)
@@ -463,7 +459,7 @@ mod tests {
             IsingNode::new(1.0),
             IsingNode::new(1.0),
         ];
-        let mut edge_potentials = BTreeMap::new();
+        let mut edge_potentials = HashMap::new();
         edge_potentials.insert((0, 1), IsingEdge::new(0.5));
         edge_potentials.insert((1, 2), IsingEdge::new(0.5));
         edge_potentials.insert((2, 3), IsingEdge::new(0.5));
@@ -526,7 +522,7 @@ mod tests {
         let graph = wedge_graph();
         let observations = vec![(0usize, 1usize)]
             .into_iter()
-            .collect::<BTreeMap<usize, usize>>();
+            .collect::<HashMap<usize, usize>>();
         let (conditioned, new_to_old) = graph.condition(observations);
         assert_eq!(new_to_old[0], 1);
         assert_eq!(new_to_old[1], 2);
@@ -546,7 +542,7 @@ mod tests {
         let node1 = IsingNode::new(1.0);
         let edge = IsingEdge::new(1.0);
         let node2 = IsingNode::new(1.0);
-        let mut edge_set = BTreeMap::new();
+        let mut edge_set = HashMap::new();
         edge_set.insert((0, 1), edge);
         let graph = DiscreteUndirectedGraph::new(vec![node1, node2], edge_set);
         let marginals = graph.compute_marginals().unwrap();
@@ -560,7 +556,7 @@ mod tests {
     #[test]
     fn test_marginalize_ising_isolated() {
         let nodes = vec![IsingNode::new(-1.0), IsingNode::new(1.0)];
-        let graph = DiscreteUndirectedGraph::<IsingNode, IsingEdge>::new(nodes, BTreeMap::new());
+        let graph = DiscreteUndirectedGraph::<IsingNode, IsingEdge>::new(nodes, HashMap::new());
         let marginals = graph.compute_marginals().unwrap();
         assert_eq!(marginals[0].potential(1), -1.0);
         assert_eq!(marginals[1].potential(1), 1.0);
@@ -596,7 +592,7 @@ mod tests {
     fn test_sample_joint_coupled_nodes() {
         for _ in 0..100 {
             let nodes = vec![IsingNode::new(0.0), IsingNode::new(0.0)];
-            let mut edges = BTreeMap::new();
+            let mut edges = HashMap::new();
             edges.insert((0, 1), IsingEdge::new(20.0));
             let graph = DiscreteUndirectedGraph::new(nodes, edges);
             let sample = graph.sample_joint().unwrap();

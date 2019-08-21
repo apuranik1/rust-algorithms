@@ -1,5 +1,5 @@
 // Run gibbs sampling on an undirected graph
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{HashMap, HashSet};
 
 use crate::inference::discrete::{self, DiscreteUndirectedGraph, EdgePotential, NodePotential};
 
@@ -37,8 +37,8 @@ impl<'a, NP: NodePotential + Clone, EP: EdgePotential + Clone> GraphAssignment<'
     }
 
     fn resample_with_labels(&self, nodes: &[usize]) -> Option<(Vec<usize>, Vec<usize>)> {
-        let to_resample: BTreeSet<usize> = nodes.iter().cloned().collect();
-        let value_map: BTreeMap<usize, usize> = (0..self.graph.n_nodes())
+        let to_resample: HashSet<usize> = nodes.iter().cloned().collect();
+        let value_map: HashMap<usize, usize> = (0..self.graph.n_nodes())
             .filter(|n| !to_resample.contains(n))
             .map(|node| (node, self.assignments[node]))
             .collect();
@@ -48,7 +48,7 @@ impl<'a, NP: NodePotential + Clone, EP: EdgePotential + Clone> GraphAssignment<'
 
     pub fn resample_block(&self, nodes: &[usize]) -> Option<Vec<usize>> {
         self.resample_with_labels(nodes).map(|(joint, new_to_old)| {
-            let old_to_new: BTreeMap<usize, usize> = new_to_old
+            let old_to_new: HashMap<usize, usize> = new_to_old
                 .into_iter()
                 .enumerate()
                 .map(|(a, b)| (b, a))
@@ -85,7 +85,7 @@ mod tests {
             IsingNode::new(0.0),
             IsingNode::new(0.0),
         ];
-        let mut edge_potentials = BTreeMap::new();
+        let mut edge_potentials = HashMap::new();
         edge_potentials.insert((0, 1), IsingEdge::new(10.0));
         edge_potentials.insert((1, 2), IsingEdge::new(-10.0));
         DiscreteUndirectedGraph::new(node_potentials, edge_potentials)
