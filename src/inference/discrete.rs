@@ -1,4 +1,4 @@
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{HashMap, HashSet};
 
 // All values are in ln-space unless otherwise specified
 
@@ -115,7 +115,7 @@ impl<NP: NodePotential, EP: EdgePotential> DiscreteUndirectedGraph<NP, EP> {
         let mut topo_order = Vec::new();
         let mut to_visit = vec![tree_root];
         // a node is marked as visited when it is first added to to_visit
-        let mut visited = BTreeSet::new();
+        let mut visited = HashSet::new();
         visited.insert(tree_root);
 
         while let Some(next) = to_visit.pop() {
