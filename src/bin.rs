@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::HashMap;
 use std::ops::Index;
 
 use rust_algorithms::inference::discrete::NodePotential;
@@ -8,7 +8,7 @@ use rust_algorithms::inference::ising::IsingNode;
 pub fn family_tree_example() {
     let alpha = 2.0;
     let (graph, names, name_to_idx) = make_family_tree(alpha);
-    let observations: BTreeMap<usize, usize> = vec![
+    let observations: HashMap<usize, usize> = vec![
         (name_to_idx["Lisa"], 1usize),
         (name_to_idx["Bart"], 0),
         (name_to_idx["Maggie"], 0),
